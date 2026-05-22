@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>小红书视频下载器</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>📕 小红书视频下载器</h1>
+
+    <div class="input-group">
+      <input type="text" id="urlInput" placeholder="粘贴小红书分享链接...">
+      <button id="pasteBtn" title="读取剪贴板">📋</button>
+      <button id="downloadBtn" class="primary">⬇ 下载</button>
+    </div>
+
+    <div id="progressArea" class="progress-area">
+      <progress id="progressBar" value="0" max="100"></progress>
+      <span id="progressText"></span>
+    </div>
+
+    <div id="status" class="status"></div>
+
+    <div id="result" class="result hidden">
+      <span id="resultText"></span>
+      <button id="revealBtn" class="link">在 Finder 中显示</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+# Rust / Cargo
+/target/
+
+# Tauri generated
+/gen/
+
+# macOS
+.DS_Store
+
+# Build artifacts
+*.dmg
+*.app
+
+# IDE
+.idea/
+.vscode/

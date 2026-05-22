@@ -1,0 +1,10 @@
+[net]
+retry = 3
+git-fetch-with-cli = true
+
+[http]
+proxy = ""
+timeout = 60
+
+[https]
+proxy = ""
