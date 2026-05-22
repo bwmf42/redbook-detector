@@ -1,5 +1,6 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use tauri::Emitter;
@@ -55,6 +56,26 @@ fn truncate(s: &str, max: usize) -> String {
     } else {
         s.to_string()
     }
+}
+
+/// HTML 实体解码，循环两次处理双重编码
+fn html_decode(s: &str) -> String {
+    let mut result = s.to_string();
+    for _ in 0..2 {
+        result = result
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&#34;", "\"")
+            .replace("&#39;", "'")
+            .replace("&#60;", "<")
+            .replace("&#62;", ">")
+            .replace("&#x22;", "\"")
+            .replace("&#x27;", "'");
+    }
+    result
 }
 
 #[tauri::command]
@@ -176,58 +197,134 @@ fn extract_note_info(page_url: &str) -> Result<(String, String, String, String),
         .into_string()
         .map_err(|e| e.to_string())?;
 
-    // 1. 提取视频 URL
+    // 优先从 __INITIAL_STATE__ 解析（最完整、最可靠）
+    if let Some(info) = extract_from_initial_state(&body) {
+        return Ok(info);
+    }
+
+    // 回退：正则提取
+    extract_from_regex(&body)
+}
+
+/// 从 window.__INITIAL_STATE__ 解析 note 数据
+fn extract_from_initial_state(body: &str) -> Option<(String, String, String, String)> {
+    let start = body.find("window.__INITIAL_STATE__=")?;
+    let json_start = start + "window.__INITIAL_STATE__=".len();
+    let end = body[json_start..].find("</script>")?;
+    let json_str = &body[json_start..json_start + end];
+
+    // 预处理非法 JSON 值
+    let cleaned = json_str
+        .replace(":undefined", ":null")
+        .replace(":NaN", ":null")
+        .replace(":Infinity", ":null")
+        .replace(":-Infinity", ":null");
+
+    let data: Value = serde_json::from_str(&cleaned).ok()?;
+
+    // 定位 note.noteDetailMap.{noteId}.note
+    let note = data.get("note")?;
+    let note_detail_map = note.get("noteDetailMap")?;
+    let detail = note_detail_map.as_object()?.values().next()?;
+    let note_obj = detail.get("note")?;
+
+    let title = note_obj
+        .get("title")?
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let title = if title.is_empty() {
+        note_obj
+            .get("desc")?
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    } else {
+        title
+    };
+
+    let user = note_obj.get("user")?;
+    let author = user
+        .get("nickname")?
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    let interact = note_obj.get("interactInfo")?;
+    let likes = interact
+        .get("likedCount")?
+        .as_u64()
+        .map(|n| n.to_string())
+        .or_else(|| interact.get("likedCount")?.as_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "0".to_string());
+
+    // 视频 URL: video.media.stream.h264[0].masterUrl
+    let video_url = note_obj
+        .get("video")?
+        .get("media")?
+        .get("stream")?
+        .get("h264")?
+        .as_array()?
+        .first()?
+        .get("masterUrl")?
+        .as_str()?
+        .to_string();
+
+    Some((video_url, author, title, likes))
+}
+
+/// 正则回退提取
+fn extract_from_regex(body: &str) -> Result<(String, String, String, String), String> {
+    // 视频 URL
     let video_re =
         Regex::new(r#"https://sns-video[^"'\s<>]+(?:mp4|m3u8)[^"'\s<>]*"#).map_err(|e| e.to_string())?;
     let video_url = video_re
-        .find(&body)
+        .find(body)
         .map(|m| m.as_str().to_string())
         .ok_or_else(|| "未在页面中找到视频链接".to_string())?;
 
-    // 2. 提取标题
-    let title = extract_title(&body);
-
-    // 3. 提取博主名
-    let author = extract_author(&body);
-
-    // 4. 提取赞数
-    let likes = extract_likes(&body);
+    let title = extract_title_regex(body);
+    let author = extract_author_regex(body);
+    let likes = extract_likes_regex(body);
 
     Ok((video_url, author, title, likes))
 }
 
-fn extract_title(body: &str) -> String {
+fn extract_title_regex(body: &str) -> String {
     // 优先 og:title
     if let Some(re) = Regex::new(r#"<meta[^>]*property="og:title"[^>]*content="([^"]*)""#).ok() {
         if let Some(caps) = re.captures(body) {
-            let t = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+            let t = html_decode(caps.get(1).map(|m| m.as_str().trim()).unwrap_or(""));
             if !t.is_empty() && t != "小红书" {
-                return truncate(t, 20);
+                return truncate(&t, 20);
             }
         }
     }
     // fallback: <title>
     if let Some(re) = Regex::new(r#"<title>([^<]*)</title>"#).ok() {
         if let Some(caps) = re.captures(body) {
-            let t = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+            let t = html_decode(caps.get(1).map(|m| m.as_str().trim()).unwrap_or(""));
             if !t.is_empty() && t != "小红书" {
-                return truncate(t, 20);
+                return truncate(&t, 20);
             }
         }
     }
     // fallback: desc
     if let Some(re) = Regex::new(r#""desc":"([^"]+)""#).ok() {
         if let Some(caps) = re.captures(body) {
-            let t = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+            let t = html_decode(caps.get(1).map(|m| m.as_str().trim()).unwrap_or(""));
             if !t.is_empty() {
-                return truncate(t, 20);
+                return truncate(&t, 20);
             }
         }
     }
     "笔记".to_string()
 }
 
-fn extract_author(body: &str) -> String {
+fn extract_author_regex(body: &str) -> String {
     let patterns = [
         r#""nickname":"([^"]+)""#,
         r#""user":"""name"":""([^"]+)"""#,
@@ -238,9 +335,9 @@ fn extract_author(body: &str) -> String {
         if let Some(re) = Regex::new(p).ok() {
             if let Some(caps) = re.captures(body) {
                 if let Some(m) = caps.get(1) {
-                    let name = m.as_str().trim();
+                    let name = html_decode(m.as_str().trim());
                     if !name.is_empty() {
-                        return truncate(name, 15);
+                        return truncate(&name, 15);
                     }
                 }
             }
@@ -249,7 +346,7 @@ fn extract_author(body: &str) -> String {
     "博主".to_string()
 }
 
-fn extract_likes(body: &str) -> String {
+fn extract_likes_regex(body: &str) -> String {
     let patterns = [
         r#""likedCount":"([^"]+)""#,
         r#""likes":"([^"]+)""#,
@@ -316,3 +413,4 @@ fn download_file(url: &str, path: &std::path::Path, window: &tauri::Window) -> R
 
     Ok(downloaded)
 }
+
