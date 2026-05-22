@@ -18,7 +18,7 @@ body {
   border-radius: 12px;
   box-shadow: 0 4px 20px rgba(0,0,0,0.08);
   padding: 28px 24px;
-  width: 420px;
+  width: 460px;
 }
 
 h1 {
@@ -32,7 +32,7 @@ h1 {
 .input-group {
   display: flex;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
 .input-group input {
@@ -75,6 +75,34 @@ h1 {
 .input-group button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.save-path-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.save-path-row button {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 6px;
+  background: #f0f0f0;
+  color: #555;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.save-path-row button:hover { background: #e0e0e0; }
+
+.save-path-text {
+  font-size: 12px;
+  color: #999;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .progress-area {

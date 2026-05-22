@@ -7,6 +7,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             redbook_detector::download_xhs,
             redbook_detector::open_in_finder,
+            redbook_detector::select_folder,
         ])
         .run(tauri::generate_context!())
         .expect("启动应用失败");

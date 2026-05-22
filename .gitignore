@@ -1,8 +1,8 @@
 # Rust / Cargo
-/target/
+**/target/
 
 # Tauri generated
-/gen/
+**/gen/
 
 # macOS
 .DS_Store

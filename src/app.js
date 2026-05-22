@@ -3,6 +3,8 @@ function $(id) { return document.getElementById(id); }
 const urlInput = $('urlInput');
 const pasteBtn = $('pasteBtn');
 const downloadBtn = $('downloadBtn');
+const browseBtn = $('browseBtn');
+const savePathText = $('savePathText');
 const status = $('status');
 const result = $('result');
 const resultText = $('resultText');
@@ -12,8 +14,13 @@ const progressBar = $('progressBar');
 const progressText = $('progressText');
 
 let downloadedPath = null;
+let saveDir = null; // null = 默认 Desktop
 
 function T() { return window.__TAURI__; }
+
+function getHome() {
+  return navigator.userAgent.includes('Mac') ? '/Users' + (navigator.platform.includes('Mac') ? '' : '') : '';
+}
 
 // 更新进度显示
 function setProgress(percent, text) {
@@ -55,6 +62,24 @@ pasteBtn.addEventListener('click', async () => {
   }
 });
 
+// 浏览选择保存路径
+browseBtn.addEventListener('click', async () => {
+  try {
+    const selected = await T().core.invoke('select_folder');
+    if (selected) {
+      saveDir = selected;
+      // 显示最后一段路径
+      const parts = selected.split('/');
+      const display = parts.length > 2 ? '…/' + parts.slice(-2).join('/') : selected;
+      savePathText.textContent = display;
+      savePathText.title = selected;
+    }
+  } catch (e) {
+    status.textContent = '选择文件夹失败';
+    status.className = 'status error';
+  }
+});
+
 // 下载
 downloadBtn.addEventListener('click', async () => {
   const url = urlInput.value.trim();
@@ -73,7 +98,7 @@ downloadBtn.addEventListener('click', async () => {
 
   try {
     await setupProgressListener();
-    const res = await T().core.invoke('download_xhs', { url });
+    const res = await T().core.invoke('download_xhs', { url, saveDir });
     if (res.success) {
       status.textContent = '';
       status.className = 'status success';

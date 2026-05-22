@@ -27,11 +27,52 @@ fn emit_progress(window: &tauri::Window, percent: i32, status: &str) {
     );
 }
 
+fn sanitize_filename(s: &str) -> String {
+    let s = s
+        .replace('/', "_")
+        .replace('\\', "_")
+        .replace(':', "_")
+        .replace('*', "_")
+        .replace('?', "_")
+        .replace('"', "_")
+        .replace('<', "_")
+        .replace('>', "_")
+        .replace('|', "_")
+        .replace('\n', " ")
+        .replace('\r', " ");
+    let s = s.trim().trim_matches('.').trim_matches(' ');
+    if s.is_empty() {
+        "video".to_string()
+    } else {
+        s.chars().take(40).collect()
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    let s = s.trim();
+    if s.chars().count() > max {
+        s.chars().take(max).collect::<String>() + "…"
+    } else {
+        s.to_string()
+    }
+}
+
 #[tauri::command]
-pub fn download_xhs(url: String, window: tauri::Window) -> XhsResult {
-    let desktop = std::env::var("HOME")
-        .map(|h| PathBuf::from(h).join("Desktop"))
-        .unwrap_or_else(|_| PathBuf::from("."));
+pub async fn select_folder() -> Option<String> {
+    let folder = rfd::AsyncFileDialog::new()
+        .set_title("选择保存文件夹")
+        .pick_folder()
+        .await;
+    folder.map(|f| f.path().to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub fn download_xhs(url: String, save_dir: Option<String>, window: tauri::Window) -> XhsResult {
+    let save_path = save_dir.map(PathBuf::from).unwrap_or_else(|| {
+        std::env::var("HOME")
+            .map(|h| PathBuf::from(h).join("Desktop"))
+            .unwrap_or_else(|_| PathBuf::from("."))
+    });
 
     emit_progress(&window, 0, "解析链接...");
     let resolved = match resolve_url(&url) {
@@ -46,21 +87,39 @@ pub fn download_xhs(url: String, window: tauri::Window) -> XhsResult {
         }
     };
 
-    emit_progress(&window, 5, "提取视频地址...");
-    let video_url = match extract_video(&resolved) {
-        Ok(u) => u,
+    emit_progress(&window, 5, "提取视频信息...");
+    let (video_url, author, title, likes) = match extract_note_info(&resolved) {
+        Ok(info) => info,
         Err(e) => {
             emit_progress(&window, 0, "idle");
             return XhsResult {
                 success: false,
-                message: format!("未找到视频: {}", e),
+                message: format!("提取信息失败: {}", e),
                 path: None,
             };
         }
     };
 
-    let filename = format!("xhs_{}.mp4", chrono::Local::now().format("%m%d_%H%M%S"));
-    let filepath = desktop.join(&filename);
+    // 构建文件名: 博主_标题_赞数.mp4
+    let author_clean = sanitize_filename(&author);
+    let title_clean = sanitize_filename(&title);
+    let likes_clean = sanitize_filename(&likes);
+    let filename = format!("{}_{}_{}.mp4", author_clean, title_clean, likes_clean);
+    let filepath = save_path.join(&filename);
+
+    // 如果已存在，加序号
+    let filepath = if filepath.exists() {
+        let stem = filepath.file_stem().unwrap_or_default().to_string_lossy();
+        let mut i = 1;
+        let mut candidate = save_path.join(format!("{}_{}.mp4", stem, i));
+        while candidate.exists() {
+            i += 1;
+            candidate = save_path.join(format!("{}_{}.mp4", stem, i));
+        }
+        candidate
+    } else {
+        filepath
+    };
 
     emit_progress(&window, 10, "开始下载...");
     match download_file(&video_url, &filepath, &window) {
@@ -106,7 +165,7 @@ fn resolve_url(url: &str) -> Result<String, String> {
     Ok(resp.get_url().to_string())
 }
 
-fn extract_video(page_url: &str) -> Result<String, String> {
+fn extract_note_info(page_url: &str) -> Result<(String, String, String, String), String> {
     let body = ureq::get(page_url)
         .set(
             "User-Agent",
@@ -117,12 +176,100 @@ fn extract_video(page_url: &str) -> Result<String, String> {
         .into_string()
         .map_err(|e| e.to_string())?;
 
-    let re = Regex::new(r#"https://sns-video[^"'\s<>]+(?:mp4|m3u8)[^"'\s<>]*"#)
-        .map_err(|e| e.to_string())?;
-
-    re.find(&body)
+    // 1. 提取视频 URL
+    let video_re =
+        Regex::new(r#"https://sns-video[^"'\s<>]+(?:mp4|m3u8)[^"'\s<>]*"#).map_err(|e| e.to_string())?;
+    let video_url = video_re
+        .find(&body)
         .map(|m| m.as_str().to_string())
-        .ok_or_else(|| "未在页面中找到视频链接".into())
+        .ok_or_else(|| "未在页面中找到视频链接".to_string())?;
+
+    // 2. 提取标题
+    let title = extract_title(&body);
+
+    // 3. 提取博主名
+    let author = extract_author(&body);
+
+    // 4. 提取赞数
+    let likes = extract_likes(&body);
+
+    Ok((video_url, author, title, likes))
+}
+
+fn extract_title(body: &str) -> String {
+    // 优先 og:title
+    if let Some(re) = Regex::new(r#"<meta[^>]*property="og:title"[^>]*content="([^"]*)""#).ok() {
+        if let Some(caps) = re.captures(body) {
+            let t = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+            if !t.is_empty() && t != "小红书" {
+                return truncate(t, 20);
+            }
+        }
+    }
+    // fallback: <title>
+    if let Some(re) = Regex::new(r#"<title>([^<]*)</title>"#).ok() {
+        if let Some(caps) = re.captures(body) {
+            let t = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+            if !t.is_empty() && t != "小红书" {
+                return truncate(t, 20);
+            }
+        }
+    }
+    // fallback: desc
+    if let Some(re) = Regex::new(r#""desc":"([^"]+)""#).ok() {
+        if let Some(caps) = re.captures(body) {
+            let t = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+            if !t.is_empty() {
+                return truncate(t, 20);
+            }
+        }
+    }
+    "笔记".to_string()
+}
+
+fn extract_author(body: &str) -> String {
+    let patterns = [
+        r#""nickname":"([^"]+)""#,
+        r#""user":"""name"":""([^"]+)"""#,
+        r#""author":"""name"":""([^"]+)"""#,
+        r#""userInfo".*?"nickname":"([^"]+)""#,
+    ];
+    for p in &patterns {
+        if let Some(re) = Regex::new(p).ok() {
+            if let Some(caps) = re.captures(body) {
+                if let Some(m) = caps.get(1) {
+                    let name = m.as_str().trim();
+                    if !name.is_empty() {
+                        return truncate(name, 15);
+                    }
+                }
+            }
+        }
+    }
+    "博主".to_string()
+}
+
+fn extract_likes(body: &str) -> String {
+    let patterns = [
+        r#""likedCount":"([^"]+)""#,
+        r#""likes":"([^"]+)""#,
+        r#""liked_count":"([^"]+)""#,
+        r#""interactInfo".*?"likedCount":"([^"]+)""#,
+        r#""interactInfo".*?"liked":"([^"]+)""#,
+    ];
+    for p in &patterns {
+        if let Some(re) = Regex::new(p).ok() {
+            if let Some(caps) = re.captures(body) {
+                if let Some(m) = caps.get(1) {
+                    let likes = m.as_str().trim();
+                    if !likes.is_empty() {
+                        return likes.to_string();
+                    }
+                }
+            }
+        }
+    }
+    "0".to_string()
 }
 
 fn download_file(url: &str, path: &std::path::Path, window: &tauri::Window) -> Result<u64, String> {
