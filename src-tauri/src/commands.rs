@@ -165,9 +165,25 @@ pub fn download_xhs(url: String, save_dir: Option<String>, window: tauri::Window
 
 #[tauri::command]
 pub fn open_in_finder(path: String) {
+    let p = PathBuf::from(&path);
+    // Only reveal real files under $HOME (or absolute path that exists).
+    let Ok(canon) = p.canonicalize() else {
+        return;
+    };
+    if !canon.is_file() && !canon.is_dir() {
+        return;
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let home = PathBuf::from(home);
+        if let (Ok(c), Ok(h)) = (canon.canonicalize(), home.canonicalize()) {
+            if !c.starts_with(&h) {
+                return;
+            }
+        }
+    }
     let _ = std::process::Command::new("open")
         .arg("-R")
-        .arg(path)
+        .arg(canon)
         .spawn();
 }
 
@@ -228,52 +244,95 @@ fn extract_from_initial_state(body: &str) -> Option<(String, String, String, Str
     let detail = note_detail_map.as_object()?.values().next()?;
     let note_obj = detail.get("note")?;
 
-    let title = note_obj
-        .get("title")?
-        .as_str()
+    let mut title = note_obj
+        .get("title")
+        .and_then(|v| v.as_str())
         .unwrap_or("")
         .trim()
         .to_string();
-    let title = if title.is_empty() {
-        note_obj
-            .get("desc")?
-            .as_str()
+    if title.is_empty() {
+        title = note_obj
+            .get("desc")
+            .and_then(|v| v.as_str())
             .unwrap_or("")
             .trim()
-            .to_string()
-    } else {
-        title
-    };
+            .to_string();
+    }
+    if title.is_empty() {
+        title = "xiaohongshu_video".to_string();
+    }
 
-    let user = note_obj.get("user")?;
-    let author = user
-        .get("nickname")?
-        .as_str()
-        .unwrap_or("")
+    let author = note_obj
+        .get("user")
+        .and_then(|u| u.get("nickname"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
         .trim()
         .to_string();
 
-    let interact = note_obj.get("interactInfo")?;
-    let likes = interact
-        .get("likedCount")?
-        .as_u64()
-        .map(|n| n.to_string())
-        .or_else(|| interact.get("likedCount")?.as_str().map(|s| s.to_string()))
+    let likes = note_obj
+        .get("interactInfo")
+        .and_then(|i| i.get("likedCount"))
+        .map(|v| {
+            v.as_u64()
+                .map(|n| n.to_string())
+                .or_else(|| v.as_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| "0".to_string())
+        })
         .unwrap_or_else(|| "0".to_string());
 
-    // 视频 URL: video.media.stream.h264[0].masterUrl
-    let video_url = note_obj
-        .get("video")?
-        .get("media")?
-        .get("stream")?
-        .get("h264")?
-        .as_array()?
-        .first()?
-        .get("masterUrl")?
-        .as_str()?
-        .to_string();
+    // 视频 URL: 从 stream 中选最高清的流
+    let video_url = pick_best_stream(note_obj)?;
 
     Some((video_url, author, title, likes))
+}
+
+/// 从 video.media.stream 中选最高清的流
+/// 优先级: h265 最高分辨率 > h264 最高分辨率 > h264[0] 兜底
+fn pick_best_stream(note_obj: &Value) -> Option<String> {
+    let stream = note_obj.get("video")?.get("media")?.get("stream")?;
+
+    // 收集所有候选流，附带分辨率信息
+    let mut candidates: Vec<(u64, &str)> = Vec::new(); // (pixels, url)
+
+    // 按编码优先级遍历: h265 通常同分辨率下画质更好
+    for codec in &["h265", "h264", "av1"] {
+        if let Some(arr) = stream.get(*codec).and_then(|v| v.as_array()) {
+            for entry in arr {
+                if let Some(url) = entry.get("masterUrl").and_then(|v| v.as_str()) {
+                    let w = entry.get("width").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let h = entry.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let bitrate = entry
+                        .get("videoBitrate")
+                        .or_else(|| entry.get("bitrate"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    // 用像素数作为主排序，码率作为次排序
+                    let score = if w > 0 && h > 0 {
+                        w * h * 1000 + bitrate
+                    } else {
+                        bitrate
+                    };
+                    candidates.push((score, url));
+                }
+            }
+        }
+    }
+
+    if candidates.is_empty() {
+        // 最后兜底: 直接取 h264[0]
+        return stream
+            .get("h264")?
+            .as_array()?
+            .first()?
+            .get("masterUrl")?
+            .as_str()
+            .map(|s| s.to_string());
+    }
+
+    // 选分数最高的
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    Some(candidates[0].1.to_string())
 }
 
 /// 正则回退提取

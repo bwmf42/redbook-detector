@@ -18,10 +18,6 @@ let saveDir = null; // null = 默认 Desktop
 
 function T() { return window.__TAURI__; }
 
-function getHome() {
-  return navigator.userAgent.includes('Mac') ? '/Users' + (navigator.platform.includes('Mac') ? '' : '') : '';
-}
-
 // 更新进度显示
 function setProgress(percent, text) {
   progressBar.value = percent;
