@@ -96,7 +96,21 @@ pub fn download_xhs(url: String, save_dir: Option<String>, window: tauri::Window
     });
 
     emit_progress(&window, 0, "解析链接...");
-    let resolved = match resolve_url(&url) {
+
+    // 从输入文本中提取小红书链接
+    let extracted_url = match extract_xhs_url(&url) {
+        Some(u) => u,
+        None => {
+            emit_progress(&window, 0, "idle");
+            return XhsResult {
+                success: false,
+                message: "未检测到有效的小红书链接，请粘贴包含 xhslink 或 xiaohongshu.com 的链接".to_string(),
+                path: None,
+            };
+        }
+    };
+
+    let resolved = match resolve_url(&extracted_url) {
         Ok(u) => u,
         Err(e) => {
             emit_progress(&window, 0, "idle");
@@ -185,6 +199,81 @@ pub fn open_in_finder(path: String) {
         .arg("-R")
         .arg(canon)
         .spawn();
+}
+
+/// 从用户输入中提取小红书链接（分享文案或纯链接），无协议时补 https://，保留原协议
+fn extract_xhs_url(text: &str) -> Option<String> {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(
+            r"(?:^|[^A-Za-z0-9./\-])((?:https?://)?(?:www\.)?(?:xhslink\.(?:com|cn)|xiaohongshu\.com)/[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+)",
+        )
+        .unwrap()
+    });
+    let m = re.captures(text)?.get(1)?.as_str();
+    let url = m.trim_end_matches(|c: char| ".,;:!?)'".contains(c));
+    if url.starts_with("http") {
+        Some(url.to_string())
+    } else {
+        Some(format!("https://{}", url))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_xhs_url;
+
+    fn ex(s: &str) -> Option<String> {
+        extract_xhs_url(s)
+    }
+
+    #[test]
+    fn plain_link() {
+        assert_eq!(ex("https://xhslink.com/a/AbCd"), Some("https://xhslink.com/a/AbCd".into()));
+        assert_eq!(ex("  https://xhslink.cn/a/AbCd \n"), Some("https://xhslink.cn/a/AbCd".into()));
+    }
+
+    #[test]
+    fn share_text_with_fullwidth_punct() {
+        let t = "64 发布了一篇小红书笔记 http://xhslink.com/a/AbCd，复制本条信息，打开小红书App查看";
+        assert_eq!(ex(t), Some("http://xhslink.com/a/AbCd".into()));
+        let t = "看看 https://xhslink.cn/a/XyZ9复制后打开";
+        assert_eq!(ex(t), Some("https://xhslink.cn/a/XyZ9".into()));
+    }
+
+    #[test]
+    fn no_scheme_gets_https() {
+        assert_eq!(ex("xhslink.com/a/AbCd"), Some("https://xhslink.com/a/AbCd".into()));
+        assert_eq!(ex("去看 xhslink.cn/a/AbCd，好看"), Some("https://xhslink.cn/a/AbCd".into()));
+        assert_eq!(ex("www.xiaohongshu.com/explore/abc"), Some("https://www.xiaohongshu.com/explore/abc".into()));
+    }
+
+    #[test]
+    fn trailing_ascii_punct_trimmed() {
+        assert_eq!(ex("link: https://xhslink.com/a/AbCd."), Some("https://xhslink.com/a/AbCd".into()));
+        assert_eq!(ex("(https://xhslink.com/a/AbCd)"), Some("https://xhslink.com/a/AbCd".into()));
+    }
+
+    #[test]
+    fn xiaohongshu_explore_with_token() {
+        let u = "https://www.xiaohongshu.com/explore/64abc123?xsec_token=AB-c_d=&xsec_source=pc_feed";
+        assert_eq!(ex(&format!("看这个 {}，不错", u)), Some(u.into()));
+        assert_eq!(ex("https://xiaohongshu.com/discovery/item/1"), Some("https://xiaohongshu.com/discovery/item/1".into()));
+    }
+
+    #[test]
+    fn first_link_wins() {
+        let t = "https://xhslink.com/a/One 和 https://xhslink.cn/a/Two";
+        assert_eq!(ex(t), Some("https://xhslink.com/a/One".into()));
+    }
+
+    #[test]
+    fn no_link_returns_none() {
+        assert_eq!(ex(""), None);
+        assert_eq!(ex("没有链接的文字"), None);
+        assert_eq!(ex("https://example.com/xhslink.com/a"), None);
+        assert_eq!(ex("https://evilxhslink.com/a/b"), None);
+    }
 }
 
 fn resolve_url(url: &str) -> Result<String, String> {

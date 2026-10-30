@@ -127,7 +127,7 @@ revealBtn.addEventListener('click', () => {
 window.addEventListener('DOMContentLoaded', async () => {
   try {
     const text = await navigator.clipboard.readText();
-    if (text && text.includes('xhslink')) {
+    if (text && /xhslink|xiaohongshu\.com/.test(text)) {
       urlInput.value = text.trim();
     }
   } catch (e) {
