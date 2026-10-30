@@ -1,6 +1,8 @@
 # redbook-detector Agent Guide
 
-本文件只记录 `redbook-detector` 的项目专属规则。通用称呼、中文回复、非琐碎任务确认、手术式修改、git 安全和敏感信息规则见父级 `/Users/vigo/Desktop/code/AGENTS.md`。
+当前交接与最近工作：[项目交接](HANDOFF.md)。
+
+本文件只记录 `redbook-detector` 的项目专属规则。通用称呼、中文回复、非琐碎任务确认、手术式修改、git 安全和敏感信息规则见父级 `/Users/vigo/Public/code/AGENTS.md`。
 
 ## 项目定位
 
